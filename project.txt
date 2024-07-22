@@ -1,0 +1,131 @@
+When interfacing a Geiger-Muller device with a MCU or a Raspberry pi, there are
+mainly two options :
+
+Use a high level device, that transfers counter information digitally such as cps, cpm, tube type, stored memory or whatever information the device holds. Some devices may
+be able to inform the host of a pulse detection using a low level signaling mode.
+These devices may be more or less sophisticated as for calibration, unit conversions, dosimetry, changing settings depending on the tube model (which have different efficiency characteristics). High count compensation due to dead time may or not be done, and the compensation formulas are dependent on the designer knowledge of the matter and choices.
+
+Use a low level device. 
+
+The GM Tube is supplied a high enough voltage to work in the Geiger plateau, such as an ionization event triggers a Townsend avalanche and a significant charge is collected.
+
+These devices shape the raw signal due to charge accumulation.. This signal is usually conveyed to an audio jack, buzzers, and/or through header pins (Vo + GND)
+
+pulse shaping is usually such as the pulse has a square wave appeareance with a sharp rise to help the digital backend that performs the counting.
+Schmitt triggers, 555 timers are quite usual in these applications.
+
+Usually this analog frontend processing exhibits a non paralyzable dead time characteristic.
+Which means that any measured event, does not retrigger the dead time.
+
+As for the GM tube townsend avalanche process, it has an intrinsic characteristic of having a short but significative dead time. After a sucessful detection, the tube is unable to detect any other event during the dead time. This dead time is usually in the order of 80 to 200 µs, and has a mostly paralyzable dead time characteristic. any event ocurring during the dead time, resets that intrinsic dead time to some extent. For sake of simplicity, we will treat at as a fully paralzable dead time. In reality, most of the literature agrees that this intrinsic dead time falls in between a paralyzable and non paralyzable model.
+
+We make the supposition that the dead time is a function of the time separation of two subsequent (or more) ionization events, with the limit reaching the nominal dead time as event separation in the time domain goes toward infinity.
+The precise model of a Townsend avalanche and its practical implementation in a commercial GM tube is outside of the scope of this article.
+
+analog frontend deadtime measurement is quite straightforward in a low count (low background radiation) environment, and can be done by plugging the GM meter jack output to a sound card set at the highest sampling capability, ideally 96ks/sor more.
+
+In our case, the dead time was measured at around 2.2ms average.
+
+Based on the research of <1972 paper>, we can see that the analog dead time due to pulse shaping into a square wave is the limiting factor as for high counting rates. Thus, it is preferable to tune, in the design phase, the 555 timing to achieve the shortest pulse length that does not trigger spurious counts by the A/Dstage. A/D stages typically register the rising edge of the pulse.
+
+Also, registering the falling edge may be useful to assess proper operation of the GM analog frontend. Absence of a falling edge in a timely manner before the next rising edge could signify that the signal is stuck in a high state, and should display a malfunction and/or high count warning.
+
+It is also preferable to use a micro controller or full fledged miniature computer such as a Raspberry pi with adequate processing power, which translates into a fast CPU clock and more than one core (for computers) to decrease ISR (interrupt service request) burden to a minimimum in high count environment.
+
+In the case of a Rasperry Pi, the following guidelines should be followed.
+
+Minimum amount of code in the ISR routine.
+Ideally it should use a deque() for pulse registering, simply appending the pulse to the deque, and a separate thread on another core should perform post processsing such as logging into the filesystem or a database.
+
+Having a low level analog GM device has the advantage that any pulse can be precisely timestamped.
+
+A GPS module is a good investment in a project of this kind as it allows not only Geo tagging of events, but also precise timestamping due to inherent time synchronisation features of GPS.
+
+Alternatively, low quality timestamping may use NTP or high precision NTP protocols. In any case precise timestamping using NTP requires symetric packet processing (no asymmetric routing - this creates different propagation delay upstream and downstream) and no variation in propagation delays. These propagation delays uncertainties and variance increasing substantially when the time source is several routers hop away, and also depend on the network traffic load induced delay.
+
+If time synchronisation is performed through air (such as using Lora) all radio induced propagation delays have to be factored in if the source is highly accurate and the precision of measurement is to be maintained.
+
+Going back to the code guidelines :
+
+It is preferable to use a low level language such as C++ instead of Python, and precise benchmarking should be done using a function generator generating pulses with a comparable duty time to the GM pulse shaper backend.
+
+In that way, influence of the A/D backend and code performance can be precisely factored in for final count up-rating & device calibration.
+
+
+Count up-rating using the model of two dead times in series with time constants t1 and t2. 
+
+In our project, we will use Muller's derivation (1) p56. (d)
+
+R = rho/(1-alpha)x + exp(alpha*x)
+
+x = rho*t2
+
+alpha = t1/t2
+
+rho being the measured count rate, and R the corrected count that give an estimation of the true count.
+
+t1 being the (paralyzable) dead time of the GM Tube, and the t2 the (non-paralyzable) dead time of the analog frontend pulse shaper.
+
+Let's introduce the well known models accounting for a single dead time system:
+
+the non paralyzable model : m = v(rho) = rho/(1 + t*rho)
+the paralyzable model : m = u(rho) = rho*exp(-rho*t)
+
+Since the unknown is the corrected count, we need to use the inverse function of these models, regardless of the model.
+
+The paralyzable function inverse expression requires the use of the W0 and W1 Lambert function, Math helpers in Python such as scipy allow straigthforward calculation of the Lambert W0 and W1 branches, albeit with some computational burden.
+
+The compound t1 and t2 in series requires numerical methods such as the secant method. Which would only increase the computational burden.
+
+In the case of a Raspberry Pi, since RAM and storage are not an issue, and the problem is not multivariate since t1 and t2 are constants, unless the circuit is tweaked (as for t2); We advise to compute the functions models, and use a reverse table lookup for fast determination of the corrected count. Scipy propose linear and higher order interpolation mechanisms, which would have a lower computational burden than root finding.
+
+
+
+
+
+
+
+Geiger Muller tubes are notorious for their (soft) limit in detection of large 
+pulse count per second events > 10000.
+This is a time domain saturation, that make pulses "pile up".
+
+There are two models that try to quantify this saturation :
+
+The paralyzable model and the non-paralyzable one.
+These models allow a better estimation of the true count (cps).
+
+Above a certain level, true pulse count could be significantly higher than even
+that estimation and a serious Geiger Muller implementation should display a warning stating that :
+-the estimation is unreliable.
+-true count is probably higher.
+-User is potentially exposed to dangerous levels of ionizing radiation.
+
+The paralyzable model express the measured count as an exponential function
+of the true count.
+m = n*exp(-nt)
+
+m being the measured count, n the true count and t the dead time constant of theassembly, that is probably longer than the tube datasheet data (if available)
+
+Since we know m and n is the unknown, solving for n is not possible analytically. Fortunately, the expression is close to the standard Lambert W function, that can be approximated or calculated (using Scipy in case of a Python script for instance)
+
+Given :
+x = y*exp(y)
+
+We have :
+y = W(x)
+
+W() being the Lambert W function, with two branches.
+If x>0, one has to compute the W0 branch
+If x<0, there are two solutions. given by the W0() and W1() branches.
+
+After some rearranging :
+
+n = -W(-mt)/t
+
+obviously, m being positive and t being positive, We fall in the second case.
+
+For sake of simplicity, it is a better practice to use the aforementioned warnings than bother calculating both possible values using the W0 and W1 branches.
+W0 should suffice, but could exhibit numerical stability problems close to :...
+
+Non-paralyzable model :
+
