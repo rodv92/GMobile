@@ -2,6 +2,7 @@ import scipy as sp
 import math as m
 import numpy as np
 import time as time
+import matplotlib.pyplot as plt
 from enum import Enum
 
 
@@ -30,7 +31,9 @@ Pg = 0.851 # ratio of decays that give rise to gamma photons
 Al_filter_thickness = 0.001 # cm  0.001 cm = 10µm standard food grade aluminium foil thickness
 
 
+max_distance = 0.3
 distance = 0.15 # distance from point source to center of detector. (meters)
+min_distance = 0.05
 # GM tube axis is normal to line from point source to GM tube center.
 
 GM_tube_length = 0.075 # glass envelope length only (meters)
@@ -76,19 +79,39 @@ gamma_att_total = gamma_att_air*gamma_att_Al
 
 
 
+
+import GMobile as GM
+
+
+# CALIBRATION step 0
+
+# Estimates the analog front end dead-time by timing the pulse width while the GM Tube is exposed to background radiation
+
+background_measure_pulsewidth_total_pulses = 60 # time to spend in seconds measuring pulse width
+background_measure_pulsewidth_max_fails = 20 # time to spend in seconds measuring pulse width
+rise_timeout_ms = 20000
+fall_timeout_ms = 20
+
+
+(pulsewidth,stdev) = GM.measurePulseWidth(background_measure_pulsewidth_total_pulses,background_measure_pulsewidth_max_fails,rise_timeout_ms,fall_timeout_ms)
+
+
 # CALIBRATION step 1
 
 #Measure the background CPM with the collimating assembly, but the source removed and far away.
 # call main.py and average CPM over specified background_acquire_time in seconds
 
-import GMobile as GM
+
 background_acquire_time = 600 # time to spend in seconds acquiring background radiation levels after first 60 sec of acquisition.
+
 
 chars = None
 chars = input("Step 1 - acquiring background radiation cpm during " + background_acquire_time + " seconds. Please put the source as far away as possible. press ENTER to start")
 while chars is None:
     chars = input("Step 1 - acquiring background radiation cpm during " + background_acquire_time + " seconds. Please put the source as far away as possible. press ENTER to start")
     
+
+GM.SetupGPIOEventDetect() # sets up the GPIO event callback
 
 s = 0
 cpm_sum = 0
@@ -100,18 +123,32 @@ while (s < background_acquire_time):
 
 cpm_background = cpm_sum/background_acquire_time
 
+def model1_estimated_GM_CPM(true_count,t1,t2): # Muller's serial t1 paralyzable dead time followed by t2 non paralyzable dead time model
+    alpha = t1/t2
+    x = true_count*t2
+    corrected_cpm_1 = true_count/((1-alpha)*x + m.exp(alpha*x))
+    return corrected_cpm_1
+
+def model2_estimated_GM_CPM(true_count,t1):
+    corrected_cpm_2 = true_count*m.exp(-true_count*t1)
+    return corrected_cpm_2
+
+def model3_estimated_GM_CPM(true_count,t2):
+    corrected_cpm_3 = true_count/(1+true_count*t2)
+    return corrected_cpm_3
+
+
 def movejig(position):
 
-    pass
-
+    #TODO : linear actuator positioning code
+    err = 0
+    
+    return err #  err = 0 : actuation OK
 
 def efficiency_step(distance=0.15,movestep=0.005,efficiency_placing_time=600,efficiency_stab_time=60,last_secs_stab_time=60,min_cpm_efficiency_cal=8*cpm_background,max_cpm_efficiency_cal=16*cpm_background):
 
     # CALIBRATION step 2
 
-    #chars = None
-    #chars = input("Step 2.0 - efficiency computation: please put the source at " + distance + "cm from the GM tube, normal to the tube, withint the collimator. press ENTER to start")
-    #while chars is None:
     print("Step 2 : automated GM tube efficiency calculation")
         
     s = 0
@@ -180,50 +217,100 @@ min_cpm_efficiency_cal = 8*cpm_background
 max_cpm_efficiency_cal = 16*cpm_background
 
 
+chars = None
+chars = input("Step 2.0 - efficiency computation: please put the source at " + distance + "cm from the GM tube, normal to the tube, withint the collimator. press ENTER to start")
 
 movejig(distance) # initial position
-efficiency = efficiency_step()
+(efficiency,distance) = efficiency_step(distance) # gets efficiency, -1 if failed, and jig to source distance
+
 while (efficiency == -1):
     print("efficiency calculation step failed. repeating")
-    efficiency = efficiency_step()
+    (efficiency,distance) = efficiency_step(distance)
+
+
+#STEP 3 : record countrate while stepping the source jig towards the GM tube
+step3_wait_time = 120
+step3_last_seconds_measure = 60
+step3_last_seconds_measure = min(120,step3_last_seconds_measure) # ensure the total seconds we sample is lower than step3_wait_time
+x_distance = np.arange(max_distance,min_distance,-0.005)
+
+y_cpm_m = np.empty(len(x_distance)) # array of average of count rate for each measurement sampling
+y_cpm_m[:] = np.nan
+
+y_std_m = np.empty(len(x_distance)) # array of standard deviation of count rate for each measurement sampling
+y_std_m[:] = np.nan
+
+y_cpm_t = np.empty(len(x_distance)) # array of theoretical cpms derated with GM tube efficiency
+y_cpm_t[:] = np.nan
+
+y_cpm_tm = np.empty(len(x_distance)) # array of theoretical cpms derated with GM tube efficiency and dead time effects
+y_cpm_tm[:] = np.nan
+
+
+distance_cpm_avg_m = np.stack([x_distance,y_cpm_m],axis=1) # tabular data for cpm (average) as a function of source/GM tube distance
+distance_cpm_std_m =  np.stack([x_distance,y_std_m],axis=1) # tabular data for cpm (std dev) as a function of source/GM tube distance
+
+distance_cpm_t = np.stack([x_distance,y_cpm_t],axis=1) # tabular data for cpm (theoretical), derated by GM tube efficiency as a function of distance
+distance_cpm_tm = np.stack([x_distance,y_cpm_tm],axis=1) # tabular data for cpm (theoretical), derated by GM tube efficiency and accounting for dead time effects
+
+
+distance = max_distance # retract actuator to minimum to get longest source to GM tube distance.
+if not (movejig(distance)): # no actuation error
+    idx = 0
+    while(distance > min_distance):
+        if(movejig(distance)):
+            break # actuation error, break loop
+        distance -= 0.05
+        cpm_stab = [] 
+        #TODO : reset deque() in GMobile after jig move, to get rid of the inertia induced by the sliding window sampling
+        while(s < step3_wait_time):
+            if(s >= (step3_wait_time - step3_last_seconds_measure)):
+                cpm_stab.append(GM.process_events(False,False)) # This call should take exactly one second.
+            else:
+                time.sleep(1)
+        cpm_avg = np.average(cpm_stab)
+        cpm_std = np.std(cpm_stab)
+        distance_cpm_avg_m[idx][1] = cpm_avg
+        distance_cpm_std_m[idx][1] = cpm_std
+        
+        
+        #calculate mean path length of gamma rays reaching the tube.
+        mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
+        #calculate attenuation from linear attenuation coefficient
+        gamma_att_air = m.exp(-µ1*mean_path)
+        #calculate total gamma attenuation from air and Al filter.
+        gamma_att_total = gamma_att_air*gamma_att_Al
+
+        flux = P*gamma_att_total/(4*m.pi*(distance + 1/(4*m.pi**0.5))**2) # gamma flux in photons.m^2.s^-1 -  accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter
+        theoretical_cpm_eff = 60*flux*GMT_dcsa*efficiency # theoretical cpm (derated with GM tube efficiency estimated in step 2.0)
+
+        distance_cpm_t[idx][1] = theoretical_cpm_eff
+        distance_cpm_tm[idx][1] = model1_estimated_GM_CPM(theoretical_cpm_eff)
 
 
 
-#lmbda = (theoretical_cpm_eff/alpha)*GMT_det/60
-#alpha*lmbda/GM_det = theo_cpm_eff/60
+
+def compare_cpm_measured_theoretical(theoretical,measured):
+
+    devsum = 0
+    devratiosum = 0
+
+    if (len(theoretical) != len(measured)):
+        return (-1,-1)
+    
+    for idx in range(0,len(theoretical)):
+
+        devratiosum += abs((measured[idx][1] - theoretical[idx][1])/measured[idx][1])
+        devsum = (measured[idx][1] - theoretical[idx][1])**2
+
+    mape = devratiosum/len(theoretical)
+    return (devsum,mape)
 
 
-corrected_cpm = (60/GMT_det)*(1-m.exp(-lmbda - lmbda*(alpha-1)))
-
-print("theoretical cpm not accounting for efficiency:")
-print(theoretical_cpm)
-
-print("theoretical cpm accounting for efficiency:")
-print(theoretical_cpm_eff)
-#print(corrected_cpm_1)
+print(compare_cpm_measured_theoretical(distance_cpm_tm,distance_cpm_avg_m))
 
 
 
-def model1_estimated_GM_CPM(true_count):
-    corrected_cpm_1 = (1/GMT_det)*(1-m.exp(-true_count - true_count*(alpha-1)))
-    return corrected_cpm_1
-def model2_estimated_GM_CPM(true_count):
-    corrected_cpm_2 = true_count*m.exp(-true_count*GMT_det)
-    return corrected_cpm_2
-def model3_estimated_GM_CPM(true_count):
-    corrected_cpm_3 = true_count/(1+true_count*GMT_det)
-    return corrected_cpm_3
-
-print("lambda")
-print(lmbda)
-print(alpha*lmbda/GMT_det)
-#print(theoretical_cpm_eff/60)
-print("poisson model")
-print(model1_estimated_GM_CPM(lmbda))
-print("paralyzable model")
-print(model2_estimated_GM_CPM(theoretical_cpm_eff/60))
-print("non paralyzable model")
-print(model3_estimated_GM_CPM(theoretical_cpm_eff/60))
 
 
 

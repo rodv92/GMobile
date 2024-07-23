@@ -9,6 +9,7 @@ import time
 import datetime
 from collections import deque 
 import struct
+import statistics
 
 # Module Imports
 import mariadb
@@ -96,10 +97,47 @@ PULSE_GPIO = 16
 lat = dms2dec("50°11'28.50\"N")
 long = dms2dec("19°45'56.02\"E")
 
-GPIO.setmode(GPIO.BOARD)
-GPIO.setup(PULSE_GPIO, GPIO.IN)
 
-GPIO.add_event_detect(PULSE_GPIO, GPIO.RISING, callback=pulse_detected_callback)
+def setupGPIOEventDetect():
+
+
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(PULSE_GPIO, GPIO.IN)
+    GPIO.add_event_detect(PULSE_GPIO, GPIO.RISING, callback=pulse_detected_callback)
+
+
+def removeGPIOEventDetect():
+
+    GPIO.remove_event_detect(PULSE_GPIO)
+
+
+def measurePulseWidth(total_pulses,max_fails=20,rise_timeout_ms=20000,fall_timeout_ms=20):
+
+    removeGPIOEventDetect()
+    s = 0
+    fail = 0
+    pulsewidths = []
+
+    while(s < total_pulses and fail < max_fails):
+        channel = GPIO.wait_for_edge(PULSE_GPIO,GPIO.RISING,timeout=rise_timeout_ms) # assuming there is at least one pulse registered every rise_timeout_ms
+        if (channel is None):
+            fail += 1
+            continue
+        pulsestart = time.time_ns()
+        channel = GPIO.wait_for_edge(PULSE_GPIO,GPIO.FALLING,timeout=fall_timeout_ms) # assuming the pulse width is less fall_timeout_ms
+        if (channel is None):
+            fail += 1
+            continue
+        pulsewidths.append((time.time_ns() - pulsestart)/1000) # save pulsewidth value in µs
+        s+= 1 # sucessful pulsewidth measure
+
+        #this pulse timing method may be problematic if the real time separation between RISING and FALLING edge is shorter than execution time between the two
+        #wait_for_edge calls. thread should be set to high priority. Overall, dead time will be overestimated.
+
+    setupGPIOEventDetect()
+    return (pulsewidths[int(len(pulsewidths)/2)],statistics.pstdev(pulsewidths)) # returns mean pulsewidth value in µs and standard deviation.
+
+
 
 # LORA INIT
 
