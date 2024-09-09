@@ -2,11 +2,13 @@ import scipy as sp
 import math as m
 import numpy as np
 import time as time
+from datetime import datetime
 import matplotlib.pyplot as plt
 from enum import Enum
 
 
-# using S.I units
+# using S.I units (unless specified otherwise in comment immediately following 
+# declaration)
 
 class activity_unit(Enum):
     BQ = 1 #Bq
@@ -19,13 +21,21 @@ activity_unit = Enum('activity_unit', ['BQ','CI'])
 # assuming a Cs-137 source, and a collimator made of thick lead of the same width as the GM tube and the same height as the tube, with the point source at the e# ntrance of the channel
 
 
-P = 370e-3 # source activity (unit determined by used_activity_unit)
+P_nom = 370e-3 # source activity (unit determined by used_activity_unit)
 used_activity_unit = activity_unit.BQ
 # it's better to use a high activity source in order to drive the count at very high levels for dead-time effects to be come noticeable
 # the lower the analog frontend dead-time that results in reliable A/D conversion, the higher the activity of the source is required.
 
 
-Pg = 0.851 # ratio of decays that give rise to gamma photons
+gamma_yield = 0.851 # ratio of decays that give rise to gamma photons
+
+source_date_of_manufacture = "2022-12-01T19:00:00Z"
+dt_source_dom = datetime.fromisoformat(source_date_of_manufacture)
+dt_now = datetime.now()
+source_age = (dt_now - dt_source_dom).total_seconds()
+half_life = 30.05 # Cs137 half-life in years
+half_life = half_life*365*24*60*60 # Cs137 half-life converted to seconds 
+
 µ1 = 0.000103 # linear attenuation coefficient of air for the gamma energy of 667 kEv - emmited by Ba137m
 #µ2 = 0.1 # linear attenuation coefficient of beta shield for the gamma energy of 667 kEv. We assume that the beta shield filters beta particles to a negligible amount. 
 Al_filter_thickness = 0.001 # cm  0.001 cm = 10µm standard food grade aluminium foil thickness
@@ -38,7 +48,7 @@ min_distance = 0.05
 
 GM_tube_length = 0.075 # glass envelope length only (meters)
 GM_tube_diameter = 0.01 # glass envelope diameter (meters)
-GM_tube_alpha = 0.0319 # tube efficiency - not all incoming rays trigger an ionization event.
+GM_tube_alpha = 0.0319 # tube efficiency - not all incoming photons trigger an ionization event.
 alpha = GM_tube_alpha
 
 GM_tube_detection_cross_section_area = GM_tube_length*GM_tube_diameter
@@ -52,8 +62,8 @@ if (used_activity_unit == activity_unit.BQ):
 elif (used_activity_unit == activity_unit.CI):
     P *= 3.7e10
 
-#calculate mean path length of gamma rays reaching the tube.
-mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
+#calculate mean path length of gamma photons reaching the tube.
+mean_path = (1/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2) + (distance**2)*m.arcsinh*(GM_tube_length/(2*distance))/GM_tube_length
 #calculate attenuation from linear attenuation coefficient
 gamma_att_air = m.exp(-µ1*mean_path)
 
@@ -189,7 +199,7 @@ def efficiency_step(distance=0.15,movestep=0.005,efficiency_placing_time=600,eff
 
     cpm_efficiency_calc = cpm_stab_avg - cpm_background
 
-    #calculate mean path length of gamma rays reaching the tube.
+    #calculate mean path length of gamma photons reaching the tube.
     mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
     #calculate attenuation from linear attenuation coefficient
     gamma_att_air = m.exp(-µ1*mean_path)
@@ -274,18 +284,22 @@ if not (movejig(distance)): # no actuation error
         distance_cpm_std_m[idx][1] = cpm_std
         
         
-        #calculate mean path length of gamma rays reaching the tube.
+        #calculate mean path length of gamma photons reaching the tube.
         mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
         #calculate attenuation from linear attenuation coefficient
         gamma_att_air = m.exp(-µ1*mean_path)
         #calculate total gamma attenuation from air and Al filter.
         gamma_att_total = gamma_att_air*gamma_att_Al
+        #derate activity based on % decay gamma yield and source age.
+        P_net = gamma_yield*P_nom*exp(-(m.log(2)/half_life)*source_age)
 
-        flux = P*gamma_att_total/(4*m.pi*(distance + 1/(4*m.pi**0.5))**2) # gamma flux in photons.m^2.s^-1 -  accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter
-        theoretical_cpm_eff = 60*flux*GMT_dcsa*efficiency # theoretical cpm (derated with GM tube efficiency estimated in step 2.0)
+        flux = gamma_att_total*2*GM_tube_width*(P_net*(GM_tube_length/2))/(4*m.pi*distance*((GM_tubelength/2)**2 + distance**2)**(1/2))
+
+        # gamma flux in photons.m^2.s^-1 -  accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter
+        theoretical_cpm_eff = 60*flux*GMT_dcsa*efficiency # theoretical cpm - gamma flux times GM tube cross section (derated with GM tube efficiency estimated in step 2.0)
 
         distance_cpm_t[idx][1] = theoretical_cpm_eff
-        distance_cpm_tm[idx][1] = model1_estimated_GM_CPM(theoretical_cpm_eff)
+        distance_cpm_tm[idx][1] = model1_estimated_GM_CPM(theoretical_cpm_eff) # theoretical cpm from above with dead time compensation
 
 
 
@@ -306,8 +320,22 @@ def compare_cpm_measured_theoretical(theoretical,measured):
     mape = devratiosum/len(theoretical)
     return (devsum,mape)
 
+def plotcurves(curve_x, curve_y1, curve_y2, color_curve_1, color_curve_2, label_curve_1, label_curve_2):
+    
+
+    plt.plot(curve_x, curve_y1, color_curve_1, label=label_curve_1)
+    plt.plot(curve_x, curve_y2, color_curve_2, label=label_curve_2)
+
+    plt.xlabel('distance (m)')
+    plt.ylabel('count rate (cpm)')
+    plt.legend()
+    plt.grid()
+    plt.show()
 
 print(compare_cpm_measured_theoretical(distance_cpm_tm,distance_cpm_avg_m))
+plotcurves(distance_cpm_t[:,0],distance_cpm_avg_m[:,1],distance_cpm_tm[:,1],'r-', 'g-', "measured","theoretical_compensated")
+
+
 
 
 
