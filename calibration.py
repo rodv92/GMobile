@@ -60,7 +60,11 @@ GMT_det = GM_tube_dead_time
 if (used_activity_unit == activity_unit.BQ):
     pass
 elif (used_activity_unit == activity_unit.CI):
-    P *= 3.7e10
+    P_nom *= 3.7e10 # convert to Bq
+
+
+#derate activity based on % decay gamma yield and source age.
+P_net = gamma_yield*P_nom*exp(-(m.log(2)/half_life)*source_age)
 
 #calculate mean path length of gamma photons reaching the tube.
 mean_path = (1/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2) + (distance**2)*m.arcsinh*(GM_tube_length/(2*distance))/GM_tube_length
@@ -200,7 +204,7 @@ def efficiency_step(distance=0.15,movestep=0.005,efficiency_placing_time=600,eff
     cpm_efficiency_calc = cpm_stab_avg - cpm_background
 
     #calculate mean path length of gamma photons reaching the tube.
-    mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
+    mean_path = (1/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2) + (distance**2)*m.arcsinh*(GM_tube_length/(2*distance))/GM_tube_length
     #calculate attenuation from linear attenuation coefficient
     gamma_att_air = m.exp(-µ1*mean_path)
 
@@ -208,8 +212,9 @@ def efficiency_step(distance=0.15,movestep=0.005,efficiency_placing_time=600,eff
     gamma_att_total = gamma_att_air*gamma_att_Al
 
 
-    flux = P*gamma_att_total/(4*m.pi*(distance + 1/(4*m.pi**0.5))**2) # gamma flux in photons.m^2.s^-1 -  accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter
-    theoretical_cpm = 60*flux*GMT_dcsa # assuming GM tube efficiency of 1, All photons give rise to ionization events inside the GM tube
+    flux = gamma_att_total*2*GM_tube_width*(P_net*(GM_tube_length/2))/(4*m.pi*distance*((GM_tubelength/2)**2 + distance**2)**(1/2))
+# gamma flux in photons.s^-1 crossing the GM tube.  Accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter of gamma photons.
+    theoretical_cpm = 60*flux # assuming GM tube efficiency of 1, All photons would give rise to ionization events inside the GM tube
 
     if(s != efficiency_placing_time):
         efficiency = cpm_efficiency_calc/theoretical_cpm
@@ -285,18 +290,16 @@ if not (movejig(distance)): # no actuation error
         
         
         #calculate mean path length of gamma photons reaching the tube.
-        mean_path = (1/GM_tube_length)*((GM_tube_length/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2)) + (distance**2)*m.arcsinh*((GM_tube_length/2)/distance)
+        mean_path = (1/2)*(distance**2 + (GM_tube_length/2)**2)**(1/2) + (distance**2)*m.arcsinh*(GM_tube_length/(2*distance))/GM_tube_length
         #calculate attenuation from linear attenuation coefficient
         gamma_att_air = m.exp(-µ1*mean_path)
         #calculate total gamma attenuation from air and Al filter.
         gamma_att_total = gamma_att_air*gamma_att_Al
-        #derate activity based on % decay gamma yield and source age.
-        P_net = gamma_yield*P_nom*exp(-(m.log(2)/half_life)*source_age)
 
         flux = gamma_att_total*2*GM_tube_width*(P_net*(GM_tube_length/2))/(4*m.pi*distance*((GM_tubelength/2)**2 + distance**2)**(1/2))
 
-        # gamma flux in photons.m^2.s^-1 -  accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter
-        theoretical_cpm_eff = 60*flux*GMT_dcsa*efficiency # theoretical cpm - gamma flux times GM tube cross section (derated with GM tube efficiency estimated in step 2.0)
+        # gamma flux in photons.s^-1 crossing the GM tube. Accounting for planar cross section of GM Tube (instead of solid angle) and attenuation from air and beta filter of gamma photons.
+        theoretical_cpm_eff = 60*flux*efficiency # theoretical cpm (derated with GM tube efficiency estimated in step 2.0)
 
         distance_cpm_t[idx][1] = theoretical_cpm_eff
         distance_cpm_tm[idx][1] = model1_estimated_GM_CPM(theoretical_cpm_eff) # theoretical cpm from above with dead time compensation
