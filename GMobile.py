@@ -94,8 +94,8 @@ cpm = 0
 #    sp.special.lambertw(z, k=0, tol=1e-8)
 
 PULSE_GPIO = 16
-lat = dms2dec("50°11'28.50\"N")
-long = dms2dec("19°45'56.02\"E")
+lat = dms2dec("51°24'04.30\"N")
+long = dms2dec("30°02'50.70\"E")
 
 
 def setupGPIOEventDetect():
